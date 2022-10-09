@@ -1,6 +1,6 @@
 
 from collections import OrderedDict
-from tkinter import N
+from tkinter import E, N
 
 import torch
 import torch.nn as nn
@@ -515,6 +515,19 @@ class TaskAwareRelation(nn.Module):
                                             batch_norm=batch_norm,
                                             dropout=dropout if i < self.num_layers - 1 else 0.0)
                 self.add_module('node_layer{}'.format(i), module_l)
+            if self.mod==7:
+                if self.lm:
+                    lmt=nn.LayerNorm((k_shot,gnn_inp_dim))
+                    self.add_module('lm{}'.format(i), lmt)
+                gen=HyperSetEncoder(inp_dim=gnn_inp_dim*2+2,hidden_dim=gnn_inp_dim*2,out_dim=gnn_inp_dim,gpu=gpu)
+                self.em=nn.parameter.Parameter(torch.rand(gnn_inp_dim,gnn_inp_dim))
+                self.add_module('gen{}'.format(i), gen)
+                atl=Atten_ker(gnn_inp_dim,1,lm=0,k_shot=self.k_shot)
+                self.add_module('atl{}'.format(i), atl)
+                module_l = NodeUpdateNetwork(inp_dim=gnn_inp_dim, out_dim=hidden_dim, n_layer=node_n_layer,
+                                            batch_norm=batch_norm,
+                                            dropout=dropout if i < self.num_layers - 1 else 0.0)
+                self.add_module('node_layer{}'.format(i), module_l)
             if self.mod==4:
                 if self.lm:
                     lmt=nn.LayerNorm((k_shot,gnn_inp_dim))
@@ -580,6 +593,7 @@ class TaskAwareRelation(nn.Module):
         assert 0 <= res_alpha <= 1
 
     def forward(self, all_emb, q_emb=None, return_adj=False, return_emb=False):
+        b,n,d=all_emb.size()
         node_feat=all_emb
         nf0=all_emb[:]
         if self.pre_dropout>0:
@@ -605,6 +619,26 @@ class TaskAwareRelation(nn.Module):
                     node_feat_new=self.self._modules['lm{}'.format(i)](node_feat_new)
                 nf=self._modules['gen{}'.format(i)].cat_label(torch.cat((nf0,node_feat_new),-1))
                 m=self._modules['gen{}'.format(i)](nf).reshape(-1,node_feat.size(-1),node_feat.size(-1))
+                adj = self._modules['atl{}'.format(i)](node_feat_new,m)  
+                node_feat_new = self._modules['node_layer{}'.format(i)](node_feat_new, adj)
+            if self.mod==6:
+                node_feat_new=node_feat[:]
+                if self.lm:
+                    node_feat_new=self.self._modules['lm{}'.format(i)](node_feat_new)
+                nf=self._modules['modw{}'.format(i)].cat_label(torch.cat((nf0,node_feat_new),-1))
+                w=self._modules['modw{}'.format(i)](nf).unsqueeze(1)
+                node_feat_new=node_feat_new*w
+                adj = self._modules['atl{}'.format(i)](node_feat_new,1)  
+                node_feat_new = self._modules['node_layer{}'.format(i)](node_feat_new, adj)  
+            if self.mod==7:
+                node_feat_new=node_feat[:]
+                if self.lm:
+                    node_feat_new=self.self._modules['lm{}'.format(i)](node_feat_new)
+                nf=self._modules['gen{}'.format(i)].cat_label(torch.cat((nf0,node_feat_new),-1))
+                em=self.em.repeat(b,1,1)
+                iem=torch.inverse(self.em).repeat(b,1,1)
+                ev=self._modules['gen{}'.format(i)](nf).reshape(-1,node_feat.size(-1),1)
+                m=torch.bmm(iem,ev*em)
                 adj = self._modules['atl{}'.format(i)](node_feat_new,m)  
                 node_feat_new = self._modules['node_layer{}'.format(i)](node_feat_new, adj)
             if self.mod==4:
